@@ -1,6 +1,6 @@
 package com.example.spark
 
-import com.example.spark.Application.Consumption
+import com.example.spark._
 import org.scalatest.flatspec.AnyFlatSpecLike
 import org.scalatest.matchers.should.Matchers
 

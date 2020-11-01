@@ -18,40 +18,6 @@ object Application {
   private[this] val PRODUCT_DATA_FILE_LOCATION = "data/product.csv"
   private[this] val STORE_DATA_FILE_LOCATION = "data/store.csv"
 
-  case class Sales(saleId:Long, netSales:Double, salesUnits:Int, storeId:Int, dateId:Int, productId:Long)
-  case class Calendar(dateId:Int, calendarDay:Int, calendarYear:Int , weekNumberOfSeason:Int)
-  case class Product(productId:Long, division:String, gender:String, category:String)
-  case class Store(storeId:Int, channel:String, country:String)
-
-  case class Consumption(uniqueKey:String, division:String, gender:String, category:String, channel:String, year:Int,
-                         netSales:Map[String, Double], salesUnits:Map[String, BigInt]) {
-    def combine(netSales:Map[String, Double], salesUnits:Map[String, BigInt]): Consumption = {
-      this.copy(netSales = this.netSales ++ netSales.filter(entry=> entry._2!=0), salesUnits = this.salesUnits ++ salesUnits.filter(entry=>entry._2!=0))
-    }
-  }
-
-  case class FlattenedSalesData(uniqueKey:String, division:String, gender:String, category:String, channel:String, year:Int, weekNumber:Int,
-                                netSales:Double, salesUnits:BigInt) {
-    def toConsumption:Consumption = {
-      Consumption(uniqueKey, division, gender, category, channel, year,
-        netSales =  {
-          val weekNumber = 1 to 53
-          weekNumber
-            .map(num => s"W$num")
-            .map(key => (key, 0.0))
-            .toMap
-        } + (s"W$weekNumber" -> netSales),
-        salesUnits =  {
-          val weekNumber = 1 to 53
-          weekNumber
-            .map(num => s"W$num")
-            .map(key => (key, BigInt(0) ))
-            .toMap
-        } + (s"W$weekNumber"->salesUnits))
-    }
-  }
-
-
   def main(args: Array[String]): Unit = {
 
     log info "Initialising spark session ..."
@@ -96,10 +62,7 @@ object Application {
       .collect()
       .toMap
     }
-    /*
-    log debug "Mapping between date identifier and year, week number pair"
-    dateIdToYearWeekNumberMapping.foreach(entry => log debug s"${entry._1} -> ( ${entry._2._1} , ${entry._2._2} )")
-    */
+
     // As the dataset is always small, it's safe to broadcast it
     val calendarBroadcast: Broadcast[Map[Int, (Int, Int)]] = sparkSession.sparkContext.broadcast(dateIdToYearWeekNumberMapping)
     val yearUserDefinedFunction = udf((dateId: Int) => calendarBroadcast.value.get(dateId).map(_._1))
@@ -126,10 +89,7 @@ object Application {
         .collect()
         .toMap
     }
-    /*
-    log debug "Mapping between store identifier and channel"
-    storeIdToChannelMapping.foreach(entry => log debug s"${entry._1} -> ${entry._2}")
-    */
+
     // As the dataset is not expected to be massive, it's safe to broadcast it as one can fit it into memory
     val storeBroadcast = sparkSession.sparkContext.broadcast(storeIdToChannelMapping)
     val channelUserDefinedFunction = udf( (storeId:Int) => storeBroadcast.value.get(storeId) )
