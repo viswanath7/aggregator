@@ -18,18 +18,67 @@ object Application {
   private[this] val PRODUCT_DATA_FILE_LOCATION = "data/product.csv"
   private[this] val STORE_DATA_FILE_LOCATION = "data/store.csv"
 
-  def main(args: Array[String]): Unit = {
-
-    implicit val sparkSession: SparkSession = {
-      log debug "Initialising spark session ..."
-      SparkSession
+  implicit val sparkSession: SparkSession = {
+    log debug "Initialising spark session ..."
+    SparkSession
       .builder
       .appName("SalesData")
       .master("local[*]") //TODO: Local; not production variant. Avoid specifying spark configuration as it can't be overridden.
       .getOrCreate()
-    }
+  }
 
-    import sparkSession.implicits._
+  import sparkSession.implicits._
+
+  implicit def salesDataSet(implicit sparkSession: SparkSession): Dataset[Sales] = {
+    val salesSchema = new StructType()
+      .add("saleId", LongType, nullable = false)
+      .add("netSales", DoubleType, nullable = true)
+      .add("salesUnits", IntegerType, nullable = true)
+      .add("storeId", IntegerType, nullable = false)
+      .add("dateId", IntegerType, nullable = false)
+      .add("productId", LongType, nullable = false)
+    sparkSession.read
+      .option("header", "true")
+      .option("sep", ",")
+      .schema(salesSchema)
+      .csv(SALES_DATA_FILE_LOCATION)
+      .as[Sales]
+  }
+
+  implicit def productDataSet(fileLocation:String)(implicit sparkSession: SparkSession): Dataset[Product] = {
+    val productSchema = new StructType()
+      .add("productId", LongType, nullable = false)
+      .add("division", StringType, nullable = true)
+      .add("gender", StringType, nullable = true)
+      .add("category", StringType, nullable = true)
+    sparkSession.read
+      .option("header", "true")
+      .option("sep", ",")
+      .schema(productSchema)
+      .csv(fileLocation)
+      .as[Product]
+  }
+
+  implicit def consumptions(implicit enhancedSales: Dataset[EnhancedSales]): Dataset[String] = {
+    enhancedSales
+      .groupBy("division", "gender", "category", "channel", "year", "weekNumber")
+      .agg(round(sum("netSales"), 2).alias("netSales"),
+        round(sum("salesUnits"), 2).alias("salesUnits"))
+      .withColumn("uniqueKey",
+        concat(
+          col("year"), lit("_"), col("channel"), lit("_"),
+          col("division"), lit("_"), col("gender"), lit("_"), col("category")
+        ))
+      .as[FlattenedSalesData]
+      .map(_.toConsumption)
+      .groupByKey(consumption => consumption.uniqueKey)
+      .reduceGroups((first, second) => first.combine(second.netSales, second.salesUnits))
+      .map(_._2)
+      .toJSON
+  }
+
+  def main(args: Array[String]): Unit = {
+
     def dateIdToYearWeekNumberMapping(fileLocation:String)(implicit sparkSession: SparkSession): Map[Int, (Int, Int)] = {
 
       def calendarDataSet = {
@@ -94,36 +143,6 @@ object Application {
     val storeBroadcast = sparkSession.sparkContext.broadcast(storeIdToChannelMapping(STORE_DATA_FILE_LOCATION))
     val channelUserDefinedFunction = udf( (storeId:Int) => storeBroadcast.value.get(storeId) )
 
-    implicit def salesDataSet(implicit sparkSession: SparkSession): Dataset[Sales] = {
-      val salesSchema = new StructType()
-        .add("saleId", LongType, nullable = false)
-        .add("netSales", DoubleType, nullable = true)
-        .add("salesUnits", IntegerType, nullable = true)
-        .add("storeId", IntegerType, nullable = false)
-        .add("dateId", IntegerType, nullable = false)
-        .add("productId", LongType, nullable = false)
-      sparkSession.read
-        .option("header", "true")
-        .option("sep", ",")
-        .schema(salesSchema)
-        .csv(SALES_DATA_FILE_LOCATION)
-        .as[Sales]
-    }
-
-    implicit def productDataSet(implicit sparkSession: SparkSession): Dataset[Product] = {
-      val productSchema = new StructType()
-        .add("productId", LongType, nullable = false)
-        .add("division", StringType, nullable = true)
-        .add("gender", StringType, nullable = true)
-        .add("category", StringType, nullable = true)
-      sparkSession.read
-        .option("header", "true")
-        .option("sep", ",")
-        .schema(productSchema)
-        .csv(PRODUCT_DATA_FILE_LOCATION)
-        .as[Product]
-    }
-
     implicit def enhancedSalesDataSet(implicit salesDataset: Dataset[Sales], productDataset: Dataset[Product]): Dataset[EnhancedSales] = {
       salesDataset
       .repartition(64) // Repartition dataframe before running large operation
@@ -137,27 +156,10 @@ object Application {
     }
 
     log debug "---------- Enhanced sales data ----------"
-    enhancedSalesDataSet.show(enhancedSalesDataSet.count().toInt, false)
+    enhancedSalesDataSet(salesDataSet, productDataSet(PRODUCT_DATA_FILE_LOCATION)).show(enhancedSalesDataSet(salesDataSet, productDataSet(PRODUCT_DATA_FILE_LOCATION)).count().toInt, false)
 
-    implicit def consumptions(implicit enhancedSales: Dataset[EnhancedSales]): Dataset[String] = {
-      enhancedSales
-      .groupBy("division", "gender", "category", "channel", "year", "weekNumber")
-      .agg(round(sum("netSales"), 2).alias("netSales"),
-        round(sum("salesUnits"), 2).alias("salesUnits"))
-      .withColumn("uniqueKey",
-        concat(
-          col("year"), lit("_"), col("channel"), lit("_"),
-          col("division"), lit("_"), col("gender"), lit("_"), col("category")
-        ))
-      .as[FlattenedSalesData]
-      .map(_.toConsumption)
-      .groupByKey(consumption => consumption.uniqueKey)
-      .reduceGroups((first, second) => first.combine(second.netSales, second.salesUnits))
-      .map(_._2)
-      .toJSON
-    }
     log debug "---------- Consumptions ----------"
-    consumptions.show(numRows = consumptions.count().toInt, truncate = false)
+    consumptions(enhancedSalesDataSet(salesDataSet, productDataSet(PRODUCT_DATA_FILE_LOCATION))).show(numRows = consumptions(enhancedSalesDataSet(salesDataSet, productDataSet(PRODUCT_DATA_FILE_LOCATION))).count().toInt, truncate = false)
 
   }
 
