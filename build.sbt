@@ -11,7 +11,7 @@ val spark = Seq(
   "org.apache.spark" %% "spark-sql"
 ).map (_ % sparkVersion )
 
-libraryDependencies ++= spark
-
 assemblyJarName in assembly := "aggregator.jar"
 mainClass in assembly := Some("com.example.spark.Application")
+
+libraryDependencies ++= Seq("org.scalatest" %% "scalatest" % "3.2.2" % Test) ++ spark

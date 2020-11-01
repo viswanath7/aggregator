@@ -24,7 +24,11 @@ object Application {
   case class Store(storeId:Int, channel:String, country:String)
 
   case class Consumption(uniqueKey:String, division:String, gender:String, category:String, channel:String, year:Int,
-                         netSales:Map[String, Double], salesUnits:Map[String, BigInt])
+                         netSales:Map[String, Double], salesUnits:Map[String, BigInt]) {
+    def combine(netSales:Map[String, Double], salesUnits:Map[String, BigInt]): Consumption = {
+      this.copy(netSales = this.netSales ++ netSales.filter(entry=> entry._2!=0), salesUnits = this.salesUnits ++ salesUnits.filter(entry=>entry._2!=0))
+    }
+  }
 
   case class FlattenedSalesData(uniqueKey:String, division:String, gender:String, category:String, channel:String, year:Int, weekNumber:Int,
                                 netSales:Double, salesUnits:BigInt) {
@@ -160,9 +164,7 @@ object Application {
         .as[Product]
     }
 
-
-
-    // Use sales dataset per product
+    log debug "Combining data from all datasets ..."
     val enhancedSalesData = salesDataSet
       .repartition(64) // Repartition dataframe before running large operation
       .withColumn("year", yearUserDefinedFunction(col("dateId")))
@@ -172,42 +174,24 @@ object Application {
       .join( productDataSet, usingColumn = "productId" )
       .persist()
 
-    log debug "--------------------------------------"
-    log debug "         Enhanced sales data          "
-    log debug "--------------------------------------"
-    enhancedSalesData
-      .show(enhancedSalesData.count().toInt, false)
-
-    log debug "--------------------------------------"
-    log debug "         Flattened sales data          "
-    log debug "--------------------------------------"
-    enhancedSalesData
+    log debug "Transforming the combined dataset to fit the JSON output format ..."
+    val result = enhancedSalesData
       .groupBy("division", "gender", "category", "channel", "year", "weekNumber")
-      .agg(round(sum("netSales"),2).alias("netSales"),
-          round(sum("salesUnits"),2).alias("salesUnits"))
+      .agg(round(sum("netSales"), 2).alias("netSales"),
+        round(sum("salesUnits"), 2).alias("salesUnits"))
       .withColumn("uniqueKey",
         concat(
           col("year"), lit("_"), col("channel"), lit("_"),
           col("division"), lit("_"), col("gender"), lit("_"), col("category")
-        )
-      )
+        ))
       .as[FlattenedSalesData]
       .map(_.toConsumption)
+      .groupByKey(consumption => consumption.uniqueKey)
+      .reduceGroups((first, second) => first.combine(second.netSales, second.salesUnits))
+      .map(_._2)
       .toJSON
-      .show(numRows = 100, truncate = false)
 
-/*
-
-    log debug "--------------------------------------"
-    log debug " Sales data grouped by week number    "
-    log debug "--------------------------------------"
-    enhancedSalesData
-      .groupBy("weekNumber")
-      .agg(round(sum("netSales"),2).alias("net_sales"),
-        round(sum("salesUnits"),2).alias("sales_units"))
-      .show(numRows = 100)
-
-*/
+    result.show(numRows = result.count().toInt, truncate = false)
 
   }
 
