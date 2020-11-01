@@ -1,10 +1,9 @@
 package com.example.spark
 
-import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
-import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
+import org.apache.spark.sql.{Dataset, SparkSession}
 import org.slf4j.LoggerFactory
 
 object Application {
@@ -135,9 +134,6 @@ object Application {
       .as[EnhancedSales]
       .persist()
     }
-
-    log debug "---------- Enhanced sales data ----------"
-    enhancedSalesDataSet.show(enhancedSalesDataSet.count().toInt, false)
 
     implicit def consumptions(implicit enhancedSales: Dataset[EnhancedSales]): Dataset[String] = {
       enhancedSales
