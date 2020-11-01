@@ -7,6 +7,9 @@ package object spark {
   case class Product(productId:Long, division:String, gender:String, category:String)
   case class Store(storeId:Int, channel:String, country:String)
 
+  case class EnhancedSales(productId:Long, saleId:Long, netSales:Double, salesUnits: Int, storeId: Int,
+                           year:Int, weekNumber:Int, channel:String, division:String, gender:String, category:String)
+
   case class Consumption(uniqueKey:String, division:String, gender:String, category:String, channel:String, year:Int,
                          netSales:Map[String, Double], salesUnits:Map[String, BigInt]) {
     def combine(netSales:Map[String, Double], salesUnits:Map[String, BigInt]): Consumption = {

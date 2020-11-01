@@ -2,7 +2,7 @@ package com.example.spark
 
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 import org.slf4j.LoggerFactory
@@ -20,17 +20,17 @@ object Application {
 
   def main(args: Array[String]): Unit = {
 
-    log info "Initialising spark session ..."
-
-    val sparkSession = SparkSession
+    implicit val sparkSession: SparkSession = {
+      log debug "Initialising spark session ..."
+      SparkSession
       .builder
       .appName("SalesData")
       .master("local[*]") //TODO: Local; not production variant. Avoid specifying spark configuration as it can't be overridden.
       .getOrCreate()
+    }
 
     import sparkSession.implicits._
-
-    lazy val dateIdToYearWeekNumberMapping: Map[Int, (Int, Int)] = {
+    def dateIdToYearWeekNumberMapping(fileLocation:String)(implicit sparkSession: SparkSession): Map[Int, (Int, Int)] = {
 
       def calendarDataSet = {
         log debug "Reading calendar data set ..."
@@ -43,7 +43,7 @@ object Application {
           .option("header", "true")
           .option("sep", ",")
           .schema(calendarSchema)
-          .csv(CALENDAR_DATA_FILE_LOCATION)
+          .csv(fileLocation)
           .as[Calendar]
       }
 
@@ -64,11 +64,11 @@ object Application {
     }
 
     // As the dataset is always small, it's safe to broadcast it
-    val calendarBroadcast: Broadcast[Map[Int, (Int, Int)]] = sparkSession.sparkContext.broadcast(dateIdToYearWeekNumberMapping)
+    val calendarBroadcast: Broadcast[Map[Int, (Int, Int)]] = sparkSession.sparkContext.broadcast(dateIdToYearWeekNumberMapping(CALENDAR_DATA_FILE_LOCATION))
     val yearUserDefinedFunction = udf((dateId: Int) => calendarBroadcast.value.get(dateId).map(_._1))
     val weekNumberUserDefinedFunction = udf((dateId: Int) => calendarBroadcast.value.get(dateId).map(_._2))
 
-    lazy val storeIdToChannelMapping: Map[Int, String] = {
+    def storeIdToChannelMapping(fileLocation:String)(implicit sparkSession: SparkSession): Map[Int, String] = {
       log debug "Computing the mapping between store identifier and channel"
 
       def storeDataSet = {
@@ -80,7 +80,7 @@ object Application {
           .option("header", "true")
           .option("sep", ",")
           .schema(storeSchema)
-          .csv(STORE_DATA_FILE_LOCATION)
+          .csv(fileLocation)
           .as[Store]
       }
 
@@ -91,10 +91,10 @@ object Application {
     }
 
     // As the dataset is not expected to be massive, it's safe to broadcast it as one can fit it into memory
-    val storeBroadcast = sparkSession.sparkContext.broadcast(storeIdToChannelMapping)
+    val storeBroadcast = sparkSession.sparkContext.broadcast(storeIdToChannelMapping(STORE_DATA_FILE_LOCATION))
     val channelUserDefinedFunction = udf( (storeId:Int) => storeBroadcast.value.get(storeId) )
 
-    lazy val salesDataSet = {
+    implicit def salesDataSet(implicit sparkSession: SparkSession): Dataset[Sales] = {
       val salesSchema = new StructType()
         .add("saleId", LongType, nullable = false)
         .add("netSales", DoubleType, nullable = true)
@@ -110,7 +110,7 @@ object Application {
         .as[Sales]
     }
 
-    lazy val productDataSet = {
+    implicit def productDataSet(implicit sparkSession: SparkSession): Dataset[Product] = {
       val productSchema = new StructType()
         .add("productId", LongType, nullable = false)
         .add("division", StringType, nullable = true)
@@ -124,18 +124,23 @@ object Application {
         .as[Product]
     }
 
-    log debug "Combining data from all datasets ..."
-    val enhancedSalesData = salesDataSet
+    implicit def enhancedSalesDataSet(implicit salesDataset: Dataset[Sales], productDataset: Dataset[Product]): Dataset[EnhancedSales] = {
+      salesDataset
       .repartition(64) // Repartition dataframe before running large operation
       .withColumn("year", yearUserDefinedFunction(col("dateId")))
       .withColumn("weekNumber", weekNumberUserDefinedFunction(col("dateId")))
       .withColumn("channel", channelUserDefinedFunction(col("storeId")))
       .select("saleId", "netSales", "salesUnits", "storeId", "productId", "year", "weekNumber", "channel")
-      .join( productDataSet, usingColumn = "productId" )
+      .join( productDataset, usingColumn = "productId" )
+      .as[EnhancedSales]
       .persist()
+    }
 
-    log debug "Transforming the combined dataset to fit the JSON output format ..."
-    val result = enhancedSalesData
+    log debug "---------- Enhanced sales data ----------"
+    enhancedSalesDataSet.show(enhancedSalesDataSet.count().toInt, false)
+
+    implicit def consumptions(implicit enhancedSales: Dataset[EnhancedSales]): Dataset[String] = {
+      enhancedSales
       .groupBy("division", "gender", "category", "channel", "year", "weekNumber")
       .agg(round(sum("netSales"), 2).alias("netSales"),
         round(sum("salesUnits"), 2).alias("salesUnits"))
@@ -150,8 +155,9 @@ object Application {
       .reduceGroups((first, second) => first.combine(second.netSales, second.salesUnits))
       .map(_._2)
       .toJSON
-
-    result.show(numRows = result.count().toInt, truncate = false)
+    }
+    log debug "---------- Consumptions ----------"
+    consumptions.show(numRows = consumptions.count().toInt, truncate = false)
 
   }
 
